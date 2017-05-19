@@ -10,9 +10,9 @@ spec:
     spec:
       containers:
       - name: kafka
-        image: solsson/kafka:0.10.0.1
+        image: wurstmeister/kafka:0.10.2.0
         command:
-        - ./bin/kafka-topics.sh
+        - /opt/kafka/bin/kafka-topics.sh
         - --zookeeper
         - zookeeper:2181
         - --create

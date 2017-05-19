@@ -1,0 +1,117 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: kafka
+spec:
+  ports:
+  - port: 9092 
+  selector:
+    app: kafka
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: broker
+  namespace: kafka
+spec:
+  ports:
+  - port: 9092
+  # [podname].broker.kafka.svc.cluster.local
+  clusterIP: None
+  selector:
+    app: kafka
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-config
+  namespace: kafka
+data:
+  server.properties: |
+    zookeeper.connect=zookeeper:2181
+    # do not mount ebs root directly. Kafka will have errors due to lost+found
+    log.dir=/opt/kafka/data/log
+    # log.retention.hours=7days
+    log.retention.hours=168
+    # log.retention.bytes=1Gi
+    log.retention.bytes=1073741824
+    # log.segment.bytes it should be greater than retention bytes
+    log.segment.bytes=1200000000
+    # auto topic creation enable
+    auto.create.topics.enable=true
+    # default partition number, policy: 100 * broker num * replica = 100 * 3 * 1 = 300
+    num.partitions=300
+    # default replica is 1
+    default.replication.factor=1
+---
+apiVersion: apps/v1beta1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: kafka
+spec:
+  serviceName: broker
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: kafka
+      annotations:
+        pod.beta.kubernetes.io/init-containers: '[
+            {
+              "name": "wait-zk",
+              "image": "wurstmeister/kafka:0.10.2.0",
+              "command": ["sh", "-c", "until ping zk-2.zk -c 1; do echo waiting; sleep 2; done;"]
+            }
+          ]'
+        scheduler.alpha.kubernetes.io/affinity: >
+          {                  
+            "podAntiAffinity": {
+              "requiredDuringSchedulingIgnoredDuringExecution": [{
+                "labelSelector": {
+                  "matchExpressions": [{
+                    "key": "app",
+                    "operator": "In",
+                    "values": ["kafka"]
+                  }]
+                },
+                "topologyKey": "kubernetes.io/hostname"
+              }]
+            }
+          }
+    spec:
+      terminationGracePeriodSeconds: 10
+      containers:
+      - name: broker
+        image: wurstmeister/kafka:0.10.2.0
+        ports:
+        - containerPort: 9092
+        command:
+        - sh
+        - -c
+        - "$KAFKA_HOME/bin/kafka-server-start.sh /etc/kafka/config/server.properties --override broker.id=$(hostname | awk -F'-' '{print $2}')"
+        volumeMounts:
+        - name: datadir
+          mountPath: /opt/kafka/data
+        - name: config
+          mountPath: /etc/kafka/config
+      volumes:
+      - name: config
+        configMap:
+          name: kafka-config
+          items:
+          - key: server.properties
+            path: server.properties
+  volumeClaimTemplates:
+  - metadata:
+      name: datadir
+      namespace: kafka
+      annotations:
+        volume.alpha.kubernetes.io/storage-class: kafka
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 20Gi
